@@ -31,10 +31,8 @@ class PeltierCoolerTemperatureControl(TemperatureControl):
     async def is_target_reached(self) -> bool | None:  # type: ignore
         """Return True if the set temperature target has been reached."""
         current_temp = await self.hw_device.get_temperature()
-        target_temp = await self.hw_device.get_temperature()
-        if target_temp == "-1000":
-            return None
-        elif abs(current_temp - target_temp) <= 2:
+        target_temp = self.hw_device.target_temp
+        if abs(current_temp - target_temp) <= 2:
             return True
         else:
             return False

@@ -327,6 +327,7 @@ class PeltierCooler(FlowchemDevice):
                 self,
                 name: str = "",
                 address: int = 0,
+                target_temp: float = None,
                 peltier_io: PeltierIO = None,
                 peltier_defaults: PeltierDefaults = None,
                 ) -> None:
@@ -334,6 +335,7 @@ class PeltierCooler(FlowchemDevice):
         self.peltier_io = peltier_io
         self.address: int = address
         self.peltier_defaults = peltier_defaults
+        self.target_temp = target_temp
 
         # ToDo check info
         self.device_info = DeviceInfo(
@@ -345,6 +347,7 @@ class PeltierCooler(FlowchemDevice):
     async def initialize(self):
         await self.set_default_values()
         await self.set_pid_parameters(*self.peltier_defaults.COOLING_PID)
+
         temp_range = TempRange(
             min=ureg.Quantity(f"{self.peltier_defaults.T_MIN} °C"),
             max=ureg.Quantity(f"{self.peltier_defaults.T_MAX} °C")
@@ -385,11 +388,12 @@ class PeltierCooler(FlowchemDevice):
         sleep(10)
         # Now start with power
         await self.set_default_values()
-        await self._set_state_dependant_parameters(temperature)
+        await self._set_state_dependant_parameters(temperature.m_as("°C"))
 
     async def _set_temperature(self, temperature: float):
         reply = await self.send_command_and_read_reply(PeltierCommands.SET_TEMPERATURE, round(temperature * 100))
         assert reply == temperature
+        self.target_temp = temperature
 
     async def set_slope(self, slope: float):
         reply = await self.send_command_and_read_reply(PeltierCommands.SET_SLOPE, round(slope * 100))
