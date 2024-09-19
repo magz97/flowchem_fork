@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import aioserial
 import pint
-
 import numpy as np
+
 from typing import Union, List, Tuple
 from dataclasses import dataclass
 from time import sleep
@@ -148,7 +148,7 @@ class PeltierIO:
         command = command.compile()
         logger.debug(f"Sending {repr(command)}")
         try:
-            self._serial.write_async(command.encode("ascii"))
+            await self._serial.write_async(command.encode("ascii"))
         except aioserial.SerialException as e:
             raise InvalidConfiguration from e
 
@@ -162,7 +162,8 @@ class PeltierIO:
         for line_num in range(
                 command.reply_lines + 2
         ):  # +1 for leading newline character in reply + 1 for prompt
-            chunk = self._serial.readline_async().decode("ascii")
+            chunk = await self._serial.readline_async()
+            chunk = chunk.decode("ascii")
             logger.debug(f"Read line: {repr(chunk)} ")
 
             # Stripping newlines etc allows to skip empty lines and clean output
@@ -217,7 +218,7 @@ class PeltierIO:
             self, command: PeltierCommand, return_parsed: bool = True
     ) -> Union[List[str], str]:
         """ Main PeltierIO method. Sends a command to the peltier, read the replies and returns it, optionally parsed """
-        with self.lock:
+        async with self.lock:
             self.reset_buffer()
             await self._write(command)
             response = await self._read_reply(command)
