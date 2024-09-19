@@ -347,6 +347,20 @@ class PeltierCooler(FlowchemDevice):
             model="Custom",
         )
 
+    @classmethod
+    def from_config(
+            cls,
+            port: str,
+            address: int,
+            name: str = "",
+            peltier_defaults: str = None,
+            **serial_kwargs,
+    ):
+
+        peltier_io = PeltierIO.from_config(port, **serial_kwargs)
+
+        return cls(peltier_io=peltier_io, address=address, name=name, peltier_defaults=peltier_defaults)
+
     async def initialize(self):
         await self.set_default_values()
         await self.set_pid_parameters(*self.peltier_defaults.COOLING_PID)
@@ -378,7 +392,7 @@ class PeltierCooler(FlowchemDevice):
                                     ) -> Union[str, List[str]]:
         """ Sends a command based on its template and return the corresponding reply as str """
         return await self.peltier_io.write_and_read_reply(
-            command_template.to_peltier(self.address, parameter), return_parsed=parse  #before : str(parameter)
+            command_template.to_peltier(self.address, str(parameter)), return_parsed=parse
         )
 
     async def set_temperature(self, temperature: pint.Quantity):
