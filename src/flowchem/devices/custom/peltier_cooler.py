@@ -329,12 +329,16 @@ class PeltierCooler(FlowchemDevice):
                 name: str = "",
                 address: int = 0,
                 peltier_io: PeltierIO = None,
-                peltier_defaults: PeltierDefaults = None,
+                peltier_defaults: str = None,
                 ) -> None:
         super().__init__(name)
         self.peltier_io = peltier_io
         self.address: int = address
-        self.peltier_defaults = peltier_defaults
+        match peltier_defaults:
+            case None | "default":
+                self.peltier_defaults = PeltierDefaults()
+            case "low_cooling":
+                self.peltier_defaults = PeltierLowCoolingDefaults()
 
         # ToDo check info
         self.device_info = DeviceInfo(
