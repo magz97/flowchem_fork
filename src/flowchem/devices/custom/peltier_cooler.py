@@ -327,7 +327,6 @@ class PeltierCooler(FlowchemDevice):
                 self,
                 name: str = "",
                 address: int = 0,
-                target_temp: float = None,
                 peltier_io: PeltierIO = None,
                 peltier_defaults: PeltierDefaults = None,
                 ) -> None:
@@ -335,7 +334,6 @@ class PeltierCooler(FlowchemDevice):
         self.peltier_io = peltier_io
         self.address: int = address
         self.peltier_defaults = peltier_defaults
-        self.target_temp = target_temp
 
         # ToDo check info
         self.device_info = DeviceInfo(
@@ -393,7 +391,6 @@ class PeltierCooler(FlowchemDevice):
     async def _set_temperature(self, temperature: float):
         reply = await self.send_command_and_read_reply(PeltierCommands.SET_TEMPERATURE, round(temperature * 100))
         assert reply == temperature
-        self.target_temp = temperature
 
     async def set_slope(self, slope: float):
         reply = await self.send_command_and_read_reply(PeltierCommands.SET_SLOPE, round(slope * 100))
@@ -439,7 +436,7 @@ class PeltierCooler(FlowchemDevice):
         assert isinstance(reply, float)
         return reply
 
-    async def get_parameters(self) -> int:
+    async def get_parameters(self) -> str:
         # return parameter list
         reply = await self.send_command_and_read_reply(PeltierCommands.GET_SETTINGS)
         return reply
