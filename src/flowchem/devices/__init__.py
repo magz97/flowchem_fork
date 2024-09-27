@@ -14,4 +14,5 @@ from .phidgets import *
 from .vacuubrand import *
 from .vapourtec import *
 from .vicivalco import *
+from .voegtlin import *
 from .custom import *
