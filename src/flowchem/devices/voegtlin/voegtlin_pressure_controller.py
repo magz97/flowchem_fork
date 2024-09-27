@@ -4,23 +4,78 @@ import asyncio
 import aioserial
 import pint
 from loguru import logger
+from dataclasses import dataclass
 
 from flowchem.components.device_info import DeviceInfo
 from flowchem.devices.flowchem_device import FlowchemDevice
-from flowchem.devices.vacuubrand.cvc3000_pressure_control import CVC3000PressureControl
-from flowchem.devices.vacuubrand.constants import ProcessStatus
+from flowchem.devices.voegtlin.voegtlin_pressure_controller_component import VoegtlinPressureControl
+# from flowchem.devices.voegtlin.constants import ProcessStatus
 from flowchem.utils.exceptions import InvalidConfigurationError
-from flowchem.utils.people import dario, jakob, wei_hsin
+from flowchem.utils.people import miguel, jakob
+
+
+@dataclass
+class ModBusCommand:
+    """Class representing a ModBus command for the pressure controller."""
+
+    device_address: int  # Address of the device (1-247)
+    function_code: int  # Function code (3 for read, 6 for write, 16 to write to multiple registers)
+    register_address: int  # Register address to read/write from
+    data: bytes  # Data to be sent or processed, could be empty for read commands
+    crc: bytes = b""  # Checksum (CRC, calculated when needed)
+
+    def calculate_crc(self):
+        """Calculate and set CRC for the command."""
+        # Build the message (device address, function code, register address, data)
+        message = self.device_address.to_bytes(1, 'big') + \
+                  self.function_code.to_bytes(1, 'big') + \
+                  self.register_address.to_bytes(2, 'big') + \
+                  self.data
+
+        # Calculate CRC-16-IBM (ModBus) and store it
+        self.crc = self._calculate_crc_for_modbus(message)
+
+    def _calculate_crc_for_modbus(self, message: bytes) -> bytes:
+        """Private method to calculate the ModBus CRC-16."""
+        crc = 0xFFFF
+        for pos in message:
+            crc ^= pos  # XOR byte into least significant byte of crc
+            for _ in range(8):  # Loop over each bit
+                if (crc & 0x0001) != 0:
+                    crc >>= 1
+                    crc ^= 0xA001
+                else:
+                    crc >>= 1
+        # Return the CRC in little-endian order (as ModBus expects it)
+        return crc.to_bytes(2, byteorder='little')
+
+    def parse_command(self) -> bytes:
+        """Return the entire ModBus command as a byte sequence."""
+        # Ensure CRC is calculated before forming the command
+        if not self.crc:
+            self.calculate_crc()
+
+        # Build the complete command as bytes
+        command = (
+                self.device_address.to_bytes(1, 'big') +  # 1 byte for device address
+                self.function_code.to_bytes(1, 'big') +  # 1 byte for function code
+                self.register_address.to_bytes(2, 'big') +  # 2 bytes for register address
+                self.data +  # Data bytes
+                self.crc  # 2 bytes for CRC
+        )
+
+        # Return the byte sequence representing the full ModBus command
+        return command
 
 
 class VoegtlinPressureController(FlowchemDevice):
     """Control class for Voegtlin Pressure Controller."""
 
     DEFAULT_CONFIG = {
-        "timeout": 0.1,
-        "baudrate": 9600,  # Supports 2400-19200
-        "parity": aioserial.PARITY_NONE,  # Other values possible via config
-        "stopbits": aioserial.STOPBITS_TWO,
+        "timeout": 0.1,  # test
+        "baudrate": 9600,  # Default baudrate, ModBus supports several other rates (2400 - 19200)
+        "parity": aioserial.PARITY_NONE,  # No parity, but can be configured if needed
+        "stopbits": aioserial.STOPBITS_TWO, # ModBus often uses two stop bits
         "bytesize": aioserial.EIGHTBITS,
     }
 
@@ -31,12 +86,12 @@ class VoegtlinPressureController(FlowchemDevice):
     ) -> None:
         super().__init__(name)
         self._serial = aio
-        self._device_sn: int = None  # type: ignore
+        self._device_address: int = None  # Device ModBus address, set after initialization
 
         self.device_info = DeviceInfo(
-            authors=[dario, jakob, wei_hsin],
-            manufacturer="Vacuubrand",
-            model="CVC3000",
+            authors=[miguel, jakob],
+            manufacturer="Voegtlin Instruments AG",
+            model="red-y smart pressure controller GSP/GSB",
         )
 
     @classmethod
@@ -46,7 +101,7 @@ class VoegtlinPressureController(FlowchemDevice):
         Only required parameter is 'port'. Optional 'loop' + others (see AioSerial())
         """
         # Merge default settings, including serial, with provided ones.
-        configuration = CVC3000.DEFAULT_CONFIG | serial_kwargs
+        configuration = VoegtlinPressureController.DEFAULT_CONFIG | serial_kwargs
 
         try:
             serial_object = aioserial.AioSerial(port, **configuration)
@@ -78,31 +133,32 @@ class VoegtlinPressureController(FlowchemDevice):
 
         self.components.append(VoegtlinPressureControl("pressure-control", self))
 
-    async def _send_command_and_read_reply(self, command: str) -> str:
-        """Send command and read the reply.
+    async def _send_command_and_read_reply(self, command: bytes) -> bytes:
+        """Send ModBus command and read the binary reply.
 
         Args:
         ----
-            command (str): string to be transmitted
+            command (bytes): Binary data to be transmitted (ModBus command)
 
         Returns:
         -------
-            str: reply received
+            bytes: Binary reply received
         """
-        await self._serial.write_async(command.encode("ascii") + b"\r\n")
-        logger.debug(f"Command `{command}` sent!")
+        # Send the binary ModBus command
+        await self._serial.write_async(command)
+        logger.debug(f"Command `{command.hex()}` sent!")
 
-        # Receive reply and return it after decoding
+        # Receive reply as binary data
         try:
-            reply = await asyncio.wait_for(self._serial.readline_async(), 2)
+            reply = await asyncio.wait_for(self._serial.read_async(8), 2)  # Example: Read 8-byte response
         except asyncio.TimeoutError:
             logger.error("No reply received! Unsupported command?")
-            return ""
+            return b""
 
-        await asyncio.sleep(0.1)  # Max rate 10 commands/s as per manual
+        await asyncio.sleep(0.1)  # Respect the ModBus timing of 10 commands/second
 
-        logger.debug(f"Reply received: {reply}")
-        return reply.decode("ascii")
+        logger.debug(f"Reply received: {reply.hex()}")
+        return reply
 
     async def version(self):
         """Get version."""
@@ -133,3 +189,24 @@ class VoegtlinPressureController(FlowchemDevice):
         # if not raw_status:
         #     raw_status = await self._send_command_and_read_reply("IN_STAT")
         # return ProcessStatus.from_reply(raw_status)
+
+
+if __name__ == "__main__":
+    # Assuming ModBusCommand class is defined as before
+    modbus_command = ModBusCommand(
+        device_address=1,  # Device address 1
+        function_code=3,  # Read holding registers (ModBus function code 3)
+        register_address=0x0021,  # Software version register (address 33 in decimal)
+        data=b'\x00\x01'  # Read 1 register
+    )
+
+    # Get the complete command in bytes
+    command_bytes = modbus_command.parse_command()
+
+    # Print the command in hex format to verify
+    print(f"ModBus command to read software version: {command_bytes.hex()}")
+
+    # async def main():
+    #     """Test function."""
+    #
+    # asyncio.run(main())
