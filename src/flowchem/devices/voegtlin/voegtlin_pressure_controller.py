@@ -18,16 +18,16 @@ from flowchem.utils.people import miguel, jakob
 class ModBusCommand:
     """Class representing a ModBus command for the pressure controller."""
 
-    device_address: int  # Address of the device (1-247)
+    address: int  # Address of the device (1-247)
     function_code: int  # Function code (3 for read, 6 for write, 16 to write to multiple registers)
     register_address: int  # Register address to read/write from
-    data: bytes  # Data to be sent or processed, could be empty for read commands
+    data: bytes = b""  # Data to be sent or processed, could be empty for read commands
     crc: bytes = b""  # Checksum (CRC, calculated when needed)
 
     def calculate_crc(self):
         """Calculate and set CRC for the command."""
         # Build the message (device address, function code, register address, data)
-        message = self.device_address.to_bytes(1, 'big') + \
+        message = self.address.to_bytes(1, 'big') + \
                   self.function_code.to_bytes(1, 'big') + \
                   self.register_address.to_bytes(2, 'big') + \
                   self.data
@@ -57,7 +57,7 @@ class ModBusCommand:
 
         # Build the complete command as bytes
         command = (
-                self.device_address.to_bytes(1, 'big') +  # 1 byte for device address
+                self.address.to_bytes(1, 'big') +  # 1 byte for device address
                 self.function_code.to_bytes(1, 'big') +  # 1 byte for function code
                 self.register_address.to_bytes(2, 'big') +  # 2 bytes for register address
                 self.data +  # Data bytes
@@ -65,29 +65,104 @@ class ModBusCommand:
         )
 
         # Return the byte sequence representing the full ModBus command
-        return command
+        return command.hex()
 
-
-class VoegtlinPressureController(FlowchemDevice):
-    """Control class for Voegtlin Pressure Controller."""
+class VoegtlinIO:
+    """Setup with serial parameters, low-level IO for Voegtlin devices."""
 
     DEFAULT_CONFIG = {
         "timeout": 0.1,  # test
         "baudrate": 9600,  # Default baudrate, ModBus supports several other rates (2400 - 19200)
         "parity": aioserial.PARITY_NONE,  # No parity, but can be configured if needed
-        "stopbits": aioserial.STOPBITS_TWO, # ModBus often uses two stop bits
+        "stopbits": aioserial.STOPBITS_TWO,  # ModBus often uses two stop bits
         "bytesize": aioserial.EIGHTBITS,
     }
 
+    def __init__(self, aio_port: aioserial.AioSerial) -> None:
+        """Initialize serial port for SV-06 valve."""
+        self._serial = aio_port
+
+    @classmethod
+    def from_config(cls, config):
+        """Create VoegtlinIO from config."""
+        # Combine the default configuration with the user provided configuration
+        configuration = VoegtlinIO.DEFAULT_CONFIG | config
+
+        try:
+            serial_object = aioserial.AioSerial(**configuration)
+        except aioserial.SerialException as serial_exception:
+            raise InvalidConfigurationError(
+                f"Cannot connect to the valve on the port <{configuration.get('port')}>"
+            ) from serial_exception
+
+        return cls(serial_object)
+
+    async def _write_async(self, command: bytes):
+        """Write a command to the valve."""
+        await self._serial.write_async(command)
+
+    async def _read_reply_async(self) -> str:
+        """Read the valve reply from serial communication."""
+        reply_string = await self._serial.readline_async()
+        return reply_string.hex()
+
+    async def write_and_read_reply_async(self, command: ModBusCommand, raise_errors: bool = True) -> tuple[str,str]:
+        """Send a command to the valve, read the replies and returns it, optionally parsed."""
+        self._serial.reset_input_buffer()
+        print(command.parse_command())
+        print(bytes.fromhex(f"{command.parse_command()}\r"))
+        await self._write_async(bytes.fromhex(f"{command.parse_command()}\r"))
+        response = await self._read_reply_async()
+        if not response and raise_errors:
+            raise InvalidConfigurationError(
+                f"No response received from valve! "
+                f"Maybe wrong valve address? (Set to {command.address})"
+            )
+        return self.parse_response(response=response, raise_errors=raise_errors)
+
+    #TODO parse response
+    @staticmethod
+    def parse_response(response: str, raise_errors: bool = True) -> tuple[str, str]:
+        """Split a received line in its components: status, reply."""
+        status, parameters = response[4:6], response[6:10]
+        parameters = parameters[2:] + parameters[:2]  # The bytes are swapped in the reply
+        status_strings = {
+            ...
+        }
+
+        status_string = status_strings.get(status, "Unknown status code")
+        # Check if the status indicates an error
+        if status in ("01", "02", "03", "04", "05", "06", "fe", "ff"):
+            if raise_errors:
+                logger.error(f"{status_string} (Status code: {status})")
+                raise DeviceError(
+                    f"{status_string} - Check command syntax or device status!"
+                )
+        return status_string, parameters
+
+class VoegtlinPressureController(FlowchemDevice):
+    """Control class for Voegtlin Pressure Controller."""
+
+    DEFAULT_CONFIG = {
+
+    }
+
+    _io_instances: set[VoegtlinIO] = set()
+
     def __init__(
         self,
-        aio: aioserial.AioSerial,
-        name="",
+        voegtlin_io: VoegtlinIO,
+        name: str = "",
+        address: int = 1,
+        **config,
     ) -> None:
         super().__init__(name)
-        self._serial = aio
-        self._device_address: int = None  # Device ModBus address, set after initialization
 
+        self.voegtlin_io = voegtlin_io
+        VoegtlinPressureController._io_instances.add(self.voegtlin_io)
+        self.config = VoegtlinPressureController.DEFAULT_CONFIG | config
+        self.address = int(address)
+        self.address = address
         self.device_info = DeviceInfo(
             authors=[miguel, jakob],
             manufacturer="Voegtlin Instruments AG",
@@ -95,22 +170,30 @@ class VoegtlinPressureController(FlowchemDevice):
         )
 
     @classmethod
-    def from_config(cls, port, name=None, **serial_kwargs):
-        """Create instance from config dict. Used by server to initialize obj from config.
+    def from_config(cls, **config):
+        """Create instances via config file."""
+        voegtlin_io = None
+        for obj in VoegtlinPressureController._io_instances:
+            # noinspection PyProtectedMember
+            if obj._serial.port == config.get("port"):
+                voegtlin_io = obj
+                break
 
-        Only required parameter is 'port'. Optional 'loop' + others (see AioSerial())
-        """
-        # Merge default settings, including serial, with provided ones.
-        configuration = VoegtlinPressureController.DEFAULT_CONFIG | serial_kwargs
+        # If not existing serial object are available for the port provided, create a new one
+        if voegtlin_io is None:
+            # Remove RunzeValve-specific keys to only have RunzeeIO's configs
+            config_for_voegtlin_io = {
+                k: v
+                for k, v in config.items()
+                if k not in ("address", "name")
+            }
+            voegtlin_io = VoegtlinIO.from_config(config_for_voegtlin_io)
 
-        try:
-            serial_object = aioserial.AioSerial(port, **configuration)
-        except (OSError, aioserial.SerialException) as serial_exception:
-            raise InvalidConfigurationError(
-                f"Cannot connect to the CVC3000 on the port <{port}>"
-            ) from serial_exception
-
-        return cls(serial_object, name)
+        return cls(
+            voegtlin_io,
+            address=config.get("address", 1),
+            name=config.get("name", ""),
+        )
 
     async def initialize(self):
         """Ensure the connection w/ device is working."""
@@ -133,32 +216,20 @@ class VoegtlinPressureController(FlowchemDevice):
 
         self.components.append(VoegtlinPressureControl("pressure-control", self))
 
-    async def _send_command_and_read_reply(self, command: bytes) -> bytes:
-        """Send ModBus command and read the binary reply.
-
-        Args:
-        ----
-            command (bytes): Binary data to be transmitted (ModBus command)
-
-        Returns:
-        -------
-            bytes: Binary reply received
-        """
-        # Send the binary ModBus command
-        await self._serial.write_async(command)
-        logger.debug(f"Command `{command.hex()}` sent!")
-
-        # Receive reply as binary data
-        try:
-            reply = await asyncio.wait_for(self._serial.read_async(8), 2)  # Example: Read 8-byte response
-        except asyncio.TimeoutError:
-            logger.error("No reply received! Unsupported command?")
-            return b""
-
-        await asyncio.sleep(0.1)  # Respect the ModBus timing of 10 commands/second
-
-        logger.debug(f"Reply received: {reply.hex()}")
-        return reply
+    async def _send_command_and_read_reply(
+            self,
+            function_code: int,
+            register_address: int,
+            data: bytes,
+    ):
+        modbus_command = ModBusCommand(
+            address=self.address,
+            function_code=function_code,
+            register_address=register_address,
+            data=data
+        )
+        status, parameters = await self.voegtlin_io.write_and_read_reply_async(command, raise_errors)
+        return status, parameters
 
     async def version(self):
         """Get version."""
@@ -170,6 +241,7 @@ class VoegtlinPressureController(FlowchemDevice):
         #     return None
 
     async def set_pressure(self, pressure: pint.Quantity):
+        """Set current pressure in mbar."""
         # mbar = int(pressure.m_as("mbar"))
         # await self._send_command_and_read_reply(f"OUT_SP_1 {mbar}")
 
@@ -182,7 +254,7 @@ class VoegtlinPressureController(FlowchemDevice):
         """Set motor speed to target % value."""
         # return await self._send_command_and_read_reply(f"OUT_SP_2 {speed}")
 
-    async def status(self) -> ProcessStatus:
+    async def status(self):
         """Get process status reply."""
         # raw_status = await self._send_command_and_read_reply("IN_STAT")
         # # Sometimes fails on first call
@@ -194,7 +266,7 @@ class VoegtlinPressureController(FlowchemDevice):
 if __name__ == "__main__":
     # Assuming ModBusCommand class is defined as before
     modbus_command = ModBusCommand(
-        device_address=1,  # Device address 1
+        address=1,  # Device address 1
         function_code=3,  # Read holding registers (ModBus function code 3)
         register_address=0x0021,  # Software version register (address 33 in decimal)
         data=b'\x00\x01'  # Read 1 register
@@ -204,9 +276,22 @@ if __name__ == "__main__":
     command_bytes = modbus_command.parse_command()
 
     # Print the command in hex format to verify
-    print(f"ModBus command to read software version: {command_bytes.hex()}")
+    print(f"ModBus command to read software version: {command_bytes}")
 
-    # async def main():
-    #     """Test function."""
-    #
-    # asyncio.run(main())
+    import asyncio
+
+    conf = {
+        "port": "COM8",
+        "address": 1,
+        "name": "voegtlin_test",
+    }
+    pc = VoegtlinPressureController.from_config(**conf)
+
+
+    async def main(pc):
+        """Test function."""
+        pc.voegtlin_io._serial.reset_input_buffer()
+        s = await pc.voegtlin_io.write_and_read_reply_async(modbus_command)
+        print(s)
+
+    asyncio.run(main(pc))
