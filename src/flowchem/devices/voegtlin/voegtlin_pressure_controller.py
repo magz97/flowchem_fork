@@ -73,7 +73,6 @@ class VoegtlinIO:
     """Setup with serial parameters, low-level IO for Voegtlin devices."""
 
     DEFAULT_CONFIG = {
-        "timeout": 0.1,  # test
         "baudrate": 9600,  # Default baudrate, ModBus supports several other rates (2400 - 19200)
         "parity": aioserial.PARITY_NONE,  # No parity, but can be configured if needed
         "stopbits": aioserial.STOPBITS_TWO,  # ModBus often uses two stop bits
@@ -108,39 +107,70 @@ class VoegtlinIO:
         reply_string = await self._serial.readline_async()
         return reply_string.hex()
 
-    async def write_and_read_reply_async(self, command: ModBusCommand, raise_errors: bool = True) -> tuple[str,str]:
+    async def write_and_read_reply_async(self, command: ModBusCommand) -> dict:
         """Send a command to the valve, read the replies and returns it, optionally parsed."""
         self._serial.reset_input_buffer()
-        print(command.parse_command())
-        print(bytes.fromhex(f"{command.parse_command()}\r"))
-        await self._write_async(bytes.fromhex(f"{command.parse_command()}\r"))
+        await self._write_async(bytes.fromhex(f"{command.parse_command()}"))
         response = await self._read_reply_async()
-        if not response and raise_errors:
+        print(response)
+        if not response:
             raise InvalidConfigurationError(
                 f"No response received from valve! "
                 f"Maybe wrong valve address? (Set to {command.address})"
             )
-        return self.parse_response(response=response, raise_errors=raise_errors)
+        return self.parse_response(response=response, response_format=command.response_format)
 
-    #TODO parse response
     @staticmethod
-    def parse_response(response: str, raise_errors: bool = True) -> tuple[str, str]:
-        """Split a received line in its components: status, reply."""
-        status, parameters = response[4:6], response[6:10]
-        parameters = parameters[2:] + parameters[:2]  # The bytes are swapped in the reply
-        status_strings = {
-            ...
-        }
+    def parse_response(response: str, response_format: str) -> dict:
+        """
+        Parses the Vögtlin device response into address, function code, and data components.
 
-        status_string = status_strings.get(status, "Unknown status code")
-        # Check if the status indicates an error
-        if status in ("01", "02", "03", "04", "05", "06", "fe", "ff"):
-            if raise_errors:
-                logger.error(f"{status_string} (Status code: {status})")
-                raise DeviceError(
-                    f"{status_string} - Check command syntax or device status!"
-                )
-        return status_string, parameters
+        Args:
+            response (str): Hexadecimal response string from the Vögtlin device.
+            format (str): Expected data format (e.g., "uint8", "float32", "string8") for interpreting the data.
+
+        Returns:
+            dict: Parsed components including 'address', 'function_code', 'data', and 'crc'.
+        """
+        # Extract address (first byte), function code (second byte), and data (remaining bytes excluding CRC)
+        address = response[:2]
+        function_code = response[2:4]
+        byte_count = response[4:6]
+        data = response[6:-4]  # Exclude CRC at the end
+        crc = response[-4:]
+
+        # Interpret data based on the provided format
+        parsed_data = {}
+
+        if response_format == "u8" and len(data) == 2:
+            parsed_data["u8"] = int(data, 16)
+
+        elif response_format == "u16" and len(data) == 4:
+            parsed_data["u16"] = int(data, 16)
+
+        elif response_format == "u32" and len(data) == 8:
+            parsed_data["u32"] = int(data, 16)
+
+        elif response_format == "f32" and len(data) == 8:
+            hex_int = int(data, 16)
+            parsed_data["f32"] = struct.unpack('!f', hex_int.to_bytes(4, 'big'))[0]
+
+        elif response_format == "s8" and len(data) == 16:
+            parsed_data["s8"] = bytes.fromhex(data).decode('utf-8').strip('\x00')
+
+        elif response_format == "s50" and len(data) == 100:
+            parsed_data["s50"] = bytes.fromhex(data).decode('utf-8').strip('\x00')
+
+        else:
+            parsed_data["error"] = f"Data length mismatch for format '{response_format}'"
+
+        return {
+            "address": address,
+            "function_code": function_code,
+            "byte_count": byte_count,
+            "data": parsed_data,
+            "crc": crc
+        }
 
 class VoegtlinPressureController(FlowchemDevice):
     """Control class for Voegtlin Pressure Controller."""
