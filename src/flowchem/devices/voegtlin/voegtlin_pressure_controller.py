@@ -3,9 +3,10 @@ import asyncio
 
 import aioserial
 import pint
+import struct
+
 from loguru import logger
 from dataclasses import dataclass
-
 from flowchem.components.device_info import DeviceInfo
 from flowchem.devices.flowchem_device import FlowchemDevice
 from flowchem.devices.voegtlin.voegtlin_pressure_controller_component import VoegtlinPressureControl
@@ -18,10 +19,11 @@ from flowchem.utils.people import miguel, jakob
 class ModBusCommand:
     """Class representing a ModBus command for the pressure controller."""
 
-    address: int  # Address of the device (1-247)
-    function_code: int  # Function code (3 for read, 6 for write, 16 to write to multiple registers)
-    register_address: int  # Register address to read/write from
-    data: bytes = b""  # Data to be sent or processed, could be empty for read commands
+    address: int = 247  # Address of the device (1-247)
+    function_code: int = 3  # Function code (3 for read, 6 for write, 16 to write to multiple registers)
+    register_address: int = 0x0002  # Register address to read/write from
+    data: bytes = b"\x00\x01"  # Data to be sent or processed, could be empty for read commands
+    response_format: str = ""
     crc: bytes = b""  # Checksum (CRC, calculated when needed)
 
     def calculate_crc(self):
@@ -49,7 +51,7 @@ class ModBusCommand:
         # Return the CRC in little-endian order (as ModBus expects it)
         return crc.to_bytes(2, byteorder='little')
 
-    def parse_command(self) -> bytes:
+    def parse_command(self) -> str:
         """Return the entire ModBus command as a byte sequence."""
         # Ensure CRC is calculated before forming the command
         if not self.crc:
