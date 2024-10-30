@@ -271,6 +271,15 @@ class VoegtlinPressureController(FlowchemDevice):
         #     return raw_version.split()[-1]
         # except IndexError:
         #     return None
+        modbus_command = ModBusCommand(
+            address=self.address,  # Device address 1
+            function_code=3,  # Read holding registers (ModBus function code 3)
+            register_address=0x0021,  # first register address
+            data=b"\x00\x01",
+            response_format="u16"
+        )
+        response = await pc.voegtlin_io.write_and_read_reply_async(modbus_command)
+        return response['data'][modbus_command.response_format]
 
     async def set_pressure(self, pressure: pint.Quantity):
         """Set current pressure in mbar."""
@@ -279,8 +288,27 @@ class VoegtlinPressureController(FlowchemDevice):
 
     async def get_pressure(self):
         """Return current pressure in mbar."""
-        # pressure_text = await self._send_command_and_read_reply("IN_PV_1")
-        # return float(pressure_text.split()[0])
+        modbus_command = ModBusCommand(
+            address=self.address,  # Device address 1
+            function_code=3,  # Read holding registers (ModBus function code 3)
+            register_address=0x5f00,  # first register address
+            data=b"\x00\x02",
+            response_format="f32"
+        )
+        response = await pc.voegtlin_io.write_and_read_reply_async(modbus_command)
+        return response['data'][modbus_command.response_format]
+
+    # async def get_pressure_unit(self):
+    #     """Return current pressure in mbar."""
+    #     modbus_command = ModBusCommand(
+    #         address=self.address,  # Device address 1
+    #         function_code=3,  # Read holding registers (ModBus function code 3)
+    #         register_address=0x5f00,  # first register address
+    #         data=b"\x00\x02",
+    #         response_format="s8"
+    #     )
+    #     response = await pc.voegtlin_io.write_and_read_reply_async(modbus_command)
+    #     return response['data'][modbus_command.response_format]
 
     async def motor_speed(self, speed):
         """Set motor speed to target % value."""
@@ -296,25 +324,11 @@ class VoegtlinPressureController(FlowchemDevice):
 
 
 if __name__ == "__main__":
-    # Assuming ModBusCommand class is defined as before
-    modbus_command = ModBusCommand(
-        address=1,  # Device address 1
-        function_code=3,  # Read holding registers (ModBus function code 3)
-        register_address=0x0021,  # Software version register (address 33 in decimal)
-        data=b'\x00\x01'  # Read 1 register
-    )
-
-    # Get the complete command in bytes
-    command_bytes = modbus_command.parse_command()
-
-    # Print the command in hex format to verify
-    print(f"ModBus command to read software version: {command_bytes}")
-
     import asyncio
 
     conf = {
         "port": "COM8",
-        "address": 1,
+        "address": 7,
         "name": "voegtlin_test",
     }
     pc = VoegtlinPressureController.from_config(**conf)
@@ -322,8 +336,11 @@ if __name__ == "__main__":
 
     async def main(pc):
         """Test function."""
-        pc.voegtlin_io._serial.reset_input_buffer()
-        s = await pc.voegtlin_io.write_and_read_reply_async(modbus_command)
-        print(s)
+        version = await pc.version()
+        print(version)
+        pressure = await pc.get_pressure()
+        print(pressure)
+        pressure_unit = await pc.get_pressure_unit()
+        print(pressure_unit)
 
     asyncio.run(main(pc))
