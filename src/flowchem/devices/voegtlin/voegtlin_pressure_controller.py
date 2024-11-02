@@ -1,16 +1,14 @@
-"""Vacuubrand CVC3000 control."""
+"""Voegtlin Pressure Controller control."""
 import asyncio
-
 import aioserial
-import pint
 import struct
+from flowchem import ureg
 
 from loguru import logger
 from dataclasses import dataclass
 from flowchem.components.device_info import DeviceInfo
 from flowchem.devices.flowchem_device import FlowchemDevice
 from flowchem.devices.voegtlin.voegtlin_pressure_controller_component import VoegtlinPressureControl
-# from flowchem.devices.voegtlin.constants import ProcessStatus
 from flowchem.utils.exceptions import InvalidConfigurationError
 from flowchem.utils.people import miguel, jakob
 
@@ -112,7 +110,6 @@ class VoegtlinIO:
         self._serial.reset_input_buffer()
         await self._write_async(bytes.fromhex(f"{command.parse_command()}"))
         response = await self._read_reply_async()
-        print(response)
         if not response:
             raise InvalidConfigurationError(
                 f"No response received from valve! "
@@ -141,7 +138,6 @@ class VoegtlinIO:
 
         # Interpret data based on the provided format
         parsed_data = {}
-
         if response_format == "u8" and len(data) == 2:
             parsed_data["u8"] = int(data, 16)
 
@@ -156,21 +152,24 @@ class VoegtlinIO:
             parsed_data["f32"] = struct.unpack('!f', hex_int.to_bytes(4, 'big'))[0]
 
         elif response_format == "s8" and len(data) == 16:
-            parsed_data["s8"] = bytes.fromhex(data).decode('utf-8').strip('\x00')
+            parsed_data["s8"] = bytes.fromhex(data).decode('latin-1').strip('\x00')
 
         elif response_format == "s50" and len(data) == 100:
-            parsed_data["s50"] = bytes.fromhex(data).decode('utf-8').strip('\x00')
+            parsed_data["s50"] = bytes.fromhex(data).decode('latin-1').strip('\x00')
 
         else:
             parsed_data["error"] = f"Data length mismatch for format '{response_format}'"
 
-        return {
-            "address": address,
-            "function_code": function_code,
-            "byte_count": byte_count,
-            "data": parsed_data,
-            "crc": crc
-        }
+        if response_format == "":
+            return {"response": response} #for now
+        else:
+            return {
+                "address": address,
+                "function_code": function_code,
+                "byte_count": byte_count,
+                "data": parsed_data,
+                "crc": crc
+            }
 
 class VoegtlinPressureController(FlowchemDevice):
     """Control class for Voegtlin Pressure Controller."""
@@ -229,48 +228,17 @@ class VoegtlinPressureController(FlowchemDevice):
 
     async def initialize(self):
         """Ensure the connection w/ device is working."""
-        # self.device_info.version = await self.version()
-        # if not self.device_info.version:
-        #     raise InvalidConfigurationError("No reply received from Voegtlin PC!")
+        self.device_info.version = await self.version()
+        if not self.device_info.version:
+            raise InvalidConfigurationError("No reply received from Voegtlin PC!")
 
-        # # Set to CVC3000 mode and save
-        # await self._send_command_and_read_reply("CVC 3")
-        # await self._send_command_and_read_reply("STORE")
-        # # Get reply to set commands
-        # await self._send_command_and_read_reply("ECHO 1")
-        # # Remote control
-        # await self._send_command_and_read_reply("REMOTE 1")
-        # # mbar, no autostart, no beep, venting auto
-        # await self._send_command_and_read_reply("OUT_CFG 00001")
-        # await self.motor_speed(100)
-
+        await self.turn_off_control()
         logger.debug(f"Connected with version {self.device_info.version}")
 
         self.components.append(VoegtlinPressureControl("pressure-control", self))
 
-    async def _send_command_and_read_reply(
-            self,
-            function_code: int,
-            register_address: int,
-            data: bytes,
-    ):
-        modbus_command = ModBusCommand(
-            address=self.address,
-            function_code=function_code,
-            register_address=register_address,
-            data=data
-        )
-        status, parameters = await self.voegtlin_io.write_and_read_reply_async(command, raise_errors)
-        return status, parameters
-
     async def version(self):
         """Get version."""
-        # raw_version = await self._send_command_and_read_reply("IN_VER")
-        # # raw_version = CVC 3000 VX.YY
-        # try:
-        #     return raw_version.split()[-1]
-        # except IndexError:
-        #     return None
         modbus_command = ModBusCommand(
             address=self.address,  # Device address 1
             function_code=3,  # Read holding registers (ModBus function code 3)
@@ -278,7 +246,7 @@ class VoegtlinPressureController(FlowchemDevice):
             data=b"\x00\x01",
             response_format="u16"
         )
-        response = await pc.voegtlin_io.write_and_read_reply_async(modbus_command)
+        response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
         return response['data'][modbus_command.response_format]
 
     async def set_pressure(self, pressure: pint.Quantity):
