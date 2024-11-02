@@ -10,6 +10,7 @@ from flowchem.components.device_info import DeviceInfo
 from flowchem.devices.flowchem_device import FlowchemDevice
 from flowchem.devices.voegtlin.voegtlin_pressure_controller_component import VoegtlinPressureControl
 from flowchem.utils.exceptions import InvalidConfigurationError
+from flowchem.utils.people import miguel, jakob
 
 
 @dataclass
@@ -70,6 +71,7 @@ class VoegtlinIO:
     """Setup with serial parameters, low-level IO for Voegtlin devices."""
 
     DEFAULT_CONFIG = {
+        "timeout": 1,  # test
         "baudrate": 9600,  # Default baudrate, ModBus supports several other rates (2400 - 19200)
         "parity": aioserial.PARITY_NONE,  # No parity, but can be configured if needed
         "stopbits": aioserial.STOPBITS_TWO,  # ModBus often uses two stop bits
@@ -307,29 +309,56 @@ class VoegtlinPressureController(FlowchemDevice):
         response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
         return response['data'][modbus_command.response_format]
 
-    # async def get_pressure_unit(self):
-    #     """Return current pressure in mbar."""
-    #     modbus_command = ModBusCommand(
-    #         address=self.address,  # Device address 1
-    #         function_code=3,  # Read holding registers (ModBus function code 3)
-    #         register_address=0x5f00,  # first register address
-    #         data=b"\x00\x02",
-    #         response_format="s8"
-    #     )
-    #     response = await pc.voegtlin_io.write_and_read_reply_async(modbus_command)
-    #     return response['data'][modbus_command.response_format]
+    async def get_flowrate_unit(self):
+        """Measuring unit of the selected gas data set."""
+        modbus_command = ModBusCommand(
+            address=self.address,  # Device address
+            function_code=3,  # Read holding registers (ModBus function code 3)
+            register_address=0x6046,  # first register address
+            data=b"\x00\x04",
+            response_format="s8"
+        )
+        response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
+        return response['data'][modbus_command.response_format]
 
-    async def motor_speed(self, speed):
-        """Set motor speed to target % value."""
-        # return await self._send_command_and_read_reply(f"OUT_SP_2 {speed}")
+    async def turn_off_control(self) -> bool:
+        """Deactivates the automatic control mode. Sets the valve control to 0% (Valve fully closed)."""
+        await self.control_function(20)
+        current_control = await self.control_function()
+        print(current_control)
+        return current_control == 20
 
-    async def status(self):
-        """Get process status reply."""
-        # raw_status = await self._send_command_and_read_reply("IN_STAT")
-        # # Sometimes fails on first call
-        # if not raw_status:
-        #     raw_status = await self._send_command_and_read_reply("IN_STAT")
-        # return ProcessStatus.from_reply(raw_status)
+    async def turn_on_control(self) -> bool:
+        """The pressure is controlled upstream from the process (downstream from the
+        valve). If the actual value is greater than the setpoint, the valve is closed (provided the direction of flow is 'Normal').
+        If acting in this way it is also known as 'pressure reducer’."""
+        await self.control_function(5)
+        current_control = await self.control_function()
+        return current_control == 5
+
+    async def control_function(self, parameter: int = None):
+        """Selection of the controller mode and the source of the setpoint."""
+        if not parameter:
+            modbus_command = ModBusCommand(
+                address=self.address,  # Device address
+                function_code=3,  # Read holding registers (ModBus function code 3)
+                register_address=0x000e,  # first register address
+                data=b"\x00\x01",
+                response_format="u16"
+            )
+            response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
+            return response['data'][modbus_command.response_format]
+        else:
+            parameter = parameter.to_bytes(2, byteorder='big')
+            modbus_command = ModBusCommand(
+                address=self.address,  # Device address
+                function_code=6,  # Read holding registers (ModBus function code 3)
+                register_address=0x000e,  # first register address
+                data=parameter,
+            )
+            response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
+            return response
+
 
 
 if __name__ == "__main__":
