@@ -10,7 +10,6 @@ from flowchem.components.device_info import DeviceInfo
 from flowchem.devices.flowchem_device import FlowchemDevice
 from flowchem.devices.voegtlin.voegtlin_pressure_controller_component import VoegtlinPressureControl
 from flowchem.utils.exceptions import InvalidConfigurationError
-from flowchem.utils.people import miguel, jakob
 
 
 @dataclass
@@ -249,12 +248,40 @@ class VoegtlinPressureController(FlowchemDevice):
         response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
         return response['data'][modbus_command.response_format]
 
-    async def set_pressure(self, pressure: pint.Quantity):
-        """Set current pressure in mbar."""
-        # mbar = int(pressure.m_as("mbar"))
-        # await self._send_command_and_read_reply(f"OUT_SP_1 {mbar}")
+    async def set_pressure(self, pressure: ureg.Quantity = ureg.Quantity("0 bar")):
+        """Sets the current setpoint pressure in natural language. Queries current setpoint pressure in mbar if no pressure is given"""
+        if not pressure == ureg.Quantity("0 bar"):
+            modbus_command = ModBusCommand(
+                address=self.address,
+                function_code=3,
+                register_address=0x5f06,
+                data=b"\x00\x02",
+                response_format="f32"
+            )
+            response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
+            current_set_pressure = ureg.Quantity(f"{response['data'][modbus_command.response_format]} bar")
+            return current_set_pressure.m_as("mbar")
+        else:
+            pressure_bytes = struct.pack('>f', pressure.m_as("bar"))
+            modbus_command = ModBusCommand(
+                address=self.address,
+                function_code=6,
+                register_address=0x5f06,
+                data=pressure_bytes,
+            )
+            await self.voegtlin_io.write_and_read_reply_async(modbus_command)
+            modbus_command = ModBusCommand(
+                address=self.address,
+                function_code=3,
+                register_address=0x5f06,
+                data=b"\x00\x02",
+                response_format="f32"
+            )
+            response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
+            current_set_pressure = ureg.Quantity(f"{response['data'][modbus_command.response_format]} bar")
+            return abs(current_set_pressure.m_as("mbar") - pressure.m_as("mbar")) < 0.001
 
-    async def get_pressure(self):
+    async def get_pressure(self) -> float:
         """Return current pressure in mbar."""
         modbus_command = ModBusCommand(
             address=self.address,  # Device address 1
@@ -263,7 +290,21 @@ class VoegtlinPressureController(FlowchemDevice):
             data=b"\x00\x02",
             response_format="f32"
         )
-        response = await pc.voegtlin_io.write_and_read_reply_async(modbus_command)
+        response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
+        pressure_str = response['data'][modbus_command.response_format]
+        pressure = ureg.Quantity(f"{pressure_str} bar")
+        return ureg.Quantity(pressure).m_as("mbar")
+
+    async def get_pressure_units(self):
+        """Character string of the measured value unit of the pressure transformer."""
+        modbus_command = ModBusCommand(
+         address=self.address,  # Device address 1
+         function_code=3,  # Read holding registers (ModBus function code 3)
+         register_address=0x5f08,  # first register address
+         data=b"\x00\x04",
+         response_format="s8"
+        )
+        response = await self.voegtlin_io.write_and_read_reply_async(modbus_command)
         return response['data'][modbus_command.response_format]
 
     # async def get_pressure_unit(self):
