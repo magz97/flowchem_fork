@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from flowchem.components.technical.pressure import PressureControl
 from flowchem.devices.flowchem_device import FlowchemDevice
-# from flowchem.devices.voegtlin.constants import ProcessStatus, PumpState
 
 if TYPE_CHECKING:
     from flowchem.devices.voegtlin.voegtlin_pressure_controller import VoegtlinPressureController
@@ -18,31 +17,27 @@ class VoegtlinPressureControl(PressureControl):
         """Create a PressureControl object."""
         super().__init__(name, hw_device)
 
-        # self.add_api_route(
-        #     "/status",
-        #     self.hw_device.status,
-        #     response_model=ProcessStatus,
-        #     methods=["PUT"],
-        # )
-
     async def set_pressure(self, pressure: str):
         """Set the target pressure to the given string in natural language."""
         set_p = await super().set_pressure(pressure)
-        # return await self.hw_device.set_pressure(set_p)
+        return await self.hw_device.set_pressure(set_p)
 
     async def get_pressure(self) -> float:
         """Return pressure in mbar."""
-        # return await self.hw_device.get_pressure()
+        return await self.hw_device.get_pressure()
 
     async def is_target_reached(self) -> bool:
         """Return True if the set temperature target has been reached."""
-        # status = await self.hw_device.status()
-        # return status.state == PumpState.VACUUM_REACHED
+        tolerance = 0.001
+
+        current_pressure = await self.hw_device.get_pressure()
+        set_point_pressure = await self.hw_device.set_pressure()
+        return abs(current_pressure - set_point_pressure) <= tolerance
 
     async def power_on(self):
-        """Turn on temperature control."""
-        # return await self.hw_device._send_command_and_read_reply("START")
+        """Turn on pressure control."""
+        return await self.hw_device.turn_on_control()
 
     async def power_off(self):
-        """Turn off temperature control."""
-        # return await self.hw_device._send_command_and_read_reply("STOP")
+        """Turn off pressure control."""
+        return await self.hw_device.turn_off_control()
